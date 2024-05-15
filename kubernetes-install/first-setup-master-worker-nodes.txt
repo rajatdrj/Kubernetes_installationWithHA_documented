@@ -1,0 +1,183 @@
+We will nedd atleast 3 master nodes and 3 worker nodes so total of 6 nodes minimum is required. You can create as many workers and master as required for you.
+
+Below is the list of our nodes
+a. 172.21.90.69 B3VM-UCTNS-MS01
+b. 172.21.90.159 B3VM-UCTNS-MS02
+c. 172.21.90.67 B3VM-UCTNS-MS03
+d. 172.21.90.227 B3VM-UCTNS-WK01
+e. 172.21.90.65 B3VM-UCTNS-WK02
+f. 172.21.90.66 B3VM-UCTNS-WK03
+g. 172.21.90.188 virtual ip (will be used as load balancer)
+
+First of all disable the firewalld service on all nodes
+  systemctl disable --now firewalld
+
+1) Set Hostname and add entries in /etc/hosts file
+Go to master nodes 1, 2 and 3  
+  hostnamectl set-hostname "master-1"
+  exec bash
+  hostnamectl set-hostname "master-2"
+  exec bash
+  hostnamectl set-hostname "master-3"
+  exec bash  
+Now, Go to worker 1, 2 and 3
+  hostnamectl set-hostname "worker-1"
+  exec bash
+  hostnamectl set-hostname "worker-2"
+  exec bash
+  hostnamectl set-hostname "worker-3"
+  exec bash
+  
+2) Install and Configure Keepalive and HAProxy on all master / control plane nodes  
+Do on all master nodes:
+  sudo yum install haproxy keepalived -y
+  
+[kadmin@k8s-master-1 ~]$ sudo vi /etc/keepalived/check_apiserver.sh
+#!/bin/sh
+APISERVER_VIP=192.168.1.45
+APISERVER_DEST_PORT=6443
+
+errorExit() {
+    echo "*** $*" 1>&2
+    exit 1
+}
+
+curl --silent --max-time 2 --insecure https://localhost:${APISERVER_DEST_PORT}/ -o /dev/null || errorExit "Error GET https://localhost:${APISERVER_DEST_PORT}/"
+if ip addr | grep -q ${APISERVER_VIP}; then
+    curl --silent --max-time 2 --insecure https://${APISERVER_VIP}:${APISERVER_DEST_PORT}/ -o /dev/null || errorExit "Error GET https://${APISERVER_VIP}:${APISERVER_DEST_PORT}/"
+fi
+
+sudo chmod +x /etc/keepalived/check_apiserver.sh
+
+
+-- Take the backup of keepalived.conf file and then truncate the file.
+[kadmin@k8s-master-1 ~]$ sudo cp /etc/keepalived/keepalived.conf /etc/keepalived/keepalived.conf-org
+[kadmin@k8s-master-1 ~]$ sudo sh -c '> /etc/keepalived/keepalived.conf'
+
+
+[kadmin@k8s-master-1 ~]$ sudo vi /etc/keepalived/keepalived.conf
+! /etc/keepalived/keepalived.conf
+! Configuration File for keepalived
+global_defs {
+    router_id LVS_DEVEL
+}
+vrrp_script check_apiserver {
+  script "/etc/keepalived/check_apiserver.sh"
+  interval 3
+  weight -2
+  fall 10
+  rise 2
+}
+
+vrrp_instance VI_1 {
+    state MASTER
+    interface enp0s3
+    virtual_router_id 151
+    priority 255
+    authentication {
+        auth_type PASS
+        auth_pass P@##D321!
+    }
+    virtual_ipaddress {
+        192.168.1.45/24
+    }
+    track_script {
+        check_apiserver
+    }
+}
+
+Note: Only two parameters of this file need to be changed for master-2 & 3 nodes. State will become SLAVE for master 2 and 3, priority will be 254 and 253 respectively.
+
+Configure HAProxy on k8s-master-1 node, edit its configuration file and add the following contents:
+
+[kadmin@k8s-master-1 ~]$ sudo cp /etc/haproxy/haproxy.cfg /etc/haproxy/haproxy.cfg-org
+Remove all lines after default section and add following lines
+
+[kadmin@k8s-master-1 ~]$ sudo vi /etc/haproxy/haproxy.cfg
+#---------------------------------------------------------------------
+# apiserver frontend which proxys to the masters
+#---------------------------------------------------------------------
+frontend apiserver
+    bind *:8443
+    mode tcp
+    option tcplog
+    default_backend apiserver
+#---------------------------------------------------------------------
+# round robin balancing for apiserver
+#---------------------------------------------------------------------
+backend apiserver
+    option httpchk GET /healthz
+    http-check expect status 200
+    mode tcp
+    option ssl-hello-chk
+    balance     roundrobin
+        server k8s-master-1 192.168.1.40:6443 check
+        server k8s-master-2 192.168.1.41:6443 check
+        server k8s-master-3 192.168.1.42:6443 check
+        
+
+
+Now copy theses three files (check_apiserver.sh , keepalived.conf and haproxy.cfg) from k8s-master-1 to k8s-master-2 & 3
+
+Run the following for loop to scp these files to master 2 and 3
+  
+  [kadmin@k8s-master-1 ~]$ for f in k8s-master-2 k8s-master-3; do scp /etc/keepalived/check_apiserver.sh /etc/keepalived/keepalived.conf root@$f:/etc/keepalived; scp /etc/haproxy/haproxy.cfg root@$f:/etc/haproxy; done
+
+
+
+3) Disable Swap, set SELinux as permissive and firewall rules for Master and worker nodes
+
+Disable Swap Space on all the nodes including worker nodes, Run the following commands
+
+$ sudo swapoff -a 
+$ sudo sed -i '/ swap / s/^\(.*\)$/#\1/g' /etc/fstab
+
+Set SELinux as Permissive on all master and worker nodes, run the following commands,
+
+$ sudo setenforce 0
+$ sudo sed -i 's/^SELINUX=enforcing$/SELINUX=permissive/' /etc/selinux/config
+
+
+Firewall Rules for Master Nodes:
+Run the following firewall-cmd command on all the master nodes,
+
+$ sudo modprobe br_netfilter
+$ sudo sh -c "echo '1' > /proc/sys/net/bridge/bridge-nf-call-iptables"
+$ sudo sh -c "echo '1' > /proc/sys/net/ipv4/ip_forward"
+
+Firewall Rules for Worker nodes:
+Run the following commands on all the worker nodes,
+
+$ sudo modprobe br_netfilter
+$ sudo sh -c "echo '1' > /proc/sys/net/bridge/bridge-nf-call-iptables"
+$ sudo sh -c "echo '1' > /proc/sys/net/ipv4/ip_forward"
+
+
+4) Install Container Run Time (CRI) Docker on Master & Worker Nodes
+
+$ sudo yum install -y yum-utils
+$ sudo yum-config-manager --add-repo https://download.docker.com/linux/centos/docker-ce.repo
+$ sudo yum install docker-ce -y
+
+$ sudo systemctl enable docker --now
+
+$ rm-rf /etc/containerd/config.yaml
+$ systemctl restart containerd
+
+
+5) Install Kubeadm, kubelet and kubectl
+
+cat <<EOF | sudo tee /etc/yum.repos.d/kubernetes.repo
+[kubernetes]
+name=Kubernetes
+baseurl=https://pkgs.k8s.io/core:/stable:/v1.29/rpm/
+enabled=1
+gpgcheck=1
+gpgkey=https://pkgs.k8s.io/core:/stable:/v1.29/rpm/repodata/repomd.xml.key
+#exclude=kubelet kubeadm kubectl cri-tools kubernetes-cni
+EOF
+
+
+$ sudo yum install -y kubelet kubeadm kubectl --disableexcludes=kubernetes
+Run following systemctl command to enable kubelet service on all nodes ( master and worker nodes)
+$ sudo systemctl enable kubelet --now

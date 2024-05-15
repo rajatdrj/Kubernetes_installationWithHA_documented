@@ -1,0 +1,107 @@
+pipeline {
+    agent any
+
+    options {
+        timestamps() // Add timestamps to the console output
+    }
+
+    stages {
+        stage('Pull Code from GitLab') {
+            steps {
+                git url: 'http://10.70.230.137/arvind_pal/psa-registry-service.git', credentialsId: 'GitLabCredentials', branch: 'cloud_production_release'
+            }
+        }
+
+        stage('Build with Maven') {
+            steps {
+                sh 'mvn install -DskipTests'
+            }
+        post {
+                success {
+                    slackSend botUser: true, channel: '#jenkins-build', color: 'good', iconEmoji: '(Y)', message: """Successful build for ${env.JOB_NAME} ${env.BUILD_NUMBER}  is complete.""", teamDomain: 'https://scrbjaipur.slack.com', tokenCredentialId: 'slack-cctns'
+                }
+                failure {
+                    slackSend botUser: true, channel: '#jenkins-build', color: 'danger', iconEmoji: ':-1:', message: """Failed build for ${env.JOB_NAME} ${env.BUILD_NUMBER}', teamDomain: 'https://scrbjaipur.slack.com""", tokenCredentialId: 'slack-cctns'
+                }
+                unstable {
+                    slackSend botUser: true, channel: '#jenkins-build', color: 'warning', iconEmoji: ':warning:', message: """Unstable build for ${env.JOB_NAME} ${env.BUILD_NUMBER}', teamDomain: 'https://scrbjaipur.slack.com""", tokenCredentialId: 'slack-cctns'
+                }
+            }
+        }
+
+stage('Copy JAR to Server') {
+    steps {
+        script {
+            // Use scp command with specified SSH credentials to copy the JAR file to another server
+            sshCredentials = 'ssh69' // Specify the ID of the SSH credentials to use
+
+            sh "scp -i /root/.ssh/id_rsa target/*.jar root@172.21.90.69:/home/cctns_microservices_k8s/microservices/eureka_prod/psa-registry-service-production_release/target/psa-registry-service-0.0.1-SNAPSHOT.jar"
+        }
+    }
+}
+
+
+        stage('Build docker Image') {
+            steps {
+                script {
+                    // Use ssh command to run Docker commands on the remote server
+                    // Example: ssh root@remote_server 'docker command'
+                    sshScript = """
+                        ssh root@172.21.90.69 'cd /home/cctns_microservices_k8s/microservices/eureka_prod/psa-registry-service-production_release/ && docker build -t docker-registry:5000/psa-eureka-server:v1-${env.BUILD_NUMBER} . --no-cache'
+                    """
+                    sh sshScript
+                }
+            }
+        }
+        
+        stage('Push Docker Image') {
+            steps {
+                script {
+                    // Use ssh command to run Docker commands on the remote server
+                    // Example: ssh root@remote_server 'docker command'
+                    sshScript = """
+                        ssh root@172.21.90.69 'docker push docker-registry:5000/psa-eureka-server:v1-${env.BUILD_NUMBER}'
+                    """
+                    sh sshScript
+                }
+            }
+        }
+        
+                    stage('Deploy Application') {
+            steps {
+                script {
+                    // Use ssh command to run Docker commands on the remote server
+                    // Example: ssh root@remote_server 'docker command'
+                    sshScript = """
+                             ssh root@172.21.90.69 'kubectl set image sts/psa-eureka-server-app -n cctns-new eureka-server=docker-registry:5000/psa-eureka-server:v1-${env.BUILD_NUMBER}'
+                             sleep 30
+                             ssh root@172.21.90.69 'kubectl rollout status sts/psa-eureka-server-app -n cctns-new'
+                            """
+                            sh sshScript
+
+                }
+}
+}				
+       
+    }
+post {
+        always {
+            script {
+                // Send a Slack message when the pipeline is completed successfully
+                slackSend botUser: true, channel: '#jenkins-build', color: 'good', iconEmoji: '(Y)', message: """${env.JOB_NAME} completed successfully.""", teamDomain: 'https://scrbjaipur.slack.com', tokenCredentialId: 'slack-cctns'
+            }
+        }
+        failure {
+            script {
+                // Send a Slack message if the pipeline fails
+                slackSend botUser: true, channel: '#jenkins-build', color: 'danger', iconEmoji: ':-1:', message: """${env.JOB_NAME} failed.""", teamDomain: 'https://scrbjaipur.slack.com', tokenCredentialId: 'slack-cctns'
+            }
+        }
+        unstable {
+            script {
+                // Send a Slack message if the pipeline is unstable
+                slackSend botUser: true, channel: '#jenkins-build', color: 'warning', iconEmoji: ':warning:', message: """${env.JOB_NAME} is unstable.""", teamDomain: 'https://scrbjaipur.slack.com', tokenCredentialId: 'slack-cctns'
+            }
+        }
+    }
+}	

@@ -1,0 +1,156 @@
+Initialize the Kubernetes Cluster from first master node
+
+sudo kubeadm init --control-plane-endpoint "172.21.90.188:6443" --upload-certs --pod-network-cidr=192.168.56.0/19 --service-cidr=192.168.57.0/19 --service-dns-domain=cluster.local --apiserver-advertise-address=172.21.90.188
+
+It will give you these below commands
+
+
+Example:
+Your Kubernetes control-plane has initialized successfully!
+
+To start using your cluster, you need to run the following as a regular user:
+
+  mkdir -p $HOME/.kube
+  sudo cp -i /etc/kubernetes/admin.conf $HOME/.kube/config
+  sudo chown $(id -u):$(id -g) $HOME/.kube/config
+
+Alternatively, if you are the root user, you can run:
+
+  export KUBECONFIG=/etc/kubernetes/admin.conf
+
+You should now deploy a pod network to the cluster.
+Run "kubectl apply -f [podnetwork].yaml" with one of the options listed at:
+  https://kubernetes.io/docs/concepts/cluster-administration/addons/
+
+You can now join any number of the control-plane node running the following comm                                                                                                             and on each as root:
+
+  kubeadm join 172.90.188:6443 --token mmol39.svhtuv5gp9cwlbf1 \
+        --discovery-token-ca-cert-hash sha256:b052fb54f3de8e3fd05a537c213ce41a85                                                                                                             0d1a5b3522ee929488c231d15194ee \
+        --control-plane --certificate-key 2cf632967d03a128fbc85a904260a6139ba69b                                                                                                             cd775452b4b35418119f401541
+
+Please note that the certificate-key gives access to cluster sensitive data, kee                                                                                                             p it secret!
+As a safeguard, uploaded-certs will be deleted in two hours; If necessary, you c                                                                                                             an use
+"kubeadm init phase upload-certs --upload-certs" to reload certs afterward.
+
+Then you can join any number of worker nodes by running the following on each as                                                                                                              root:
+
+kubeadm join 172.21.90.188:6443 --token mmol39.svhtuv5gp9cwlbf1  --discovery-token-ca-cert-hash sha256:b052fb54f3de8e3fd05a537c213ce41a850d1a5b3522ee929488c231d15194ee
+
+
+So now to access your cluster using kubectl do following
+$  mkdir -p $HOME/.kube
+$  sudo cp -i /etc/kubernetes/admin.conf $HOME/.kube/config
+$  sudo chown $(id -u):$(id -g) $HOME/.kube/config
+Alternatively, if you are the root user, you can run:
+
+$  export KUBECONFIG=/etc/kubernetes/admin.conf
+
+
+Then goto second master node and run below command which is given in your output, once you receive that join command it will be available for 2 hours only:
+  kubeadm join 172.90.188:6443 --token mmol39.svhtuv5gp9cwlbf1 \
+        --discovery-token-ca-cert-hash sha256:b052fb54f3de8e3fd05a537c213ce41a85                                                                                                             0d1a5b3522ee929488c231d15194ee \
+        --control-plane --certificate-key 2cf632967d03a128fbc85a904260a6139ba69b
+        
+Do the same on 3rd master node also.
+
+
+Then got to worker nodes and run below join command 
+
+kubeadm join 172.21.90.188:6443 --token mmol39.svhtuv5gp9cwlbf1  --discovery-token-ca-cert-hash sha256:b052fb54f3de8e3fd05a537c213ce41a850d1a5b3522ee929488c231d15194ee
+
+
+Once all are done then come to first master node and run below command:
+
+kubectl get nodes
+
+you will see all nodes are in "Not Ready" state because networking is not enabled on this cluster.
+To enable the networking do below things:
+
+go to site  https://docs.tigera.io/calico/latest/getting-started/kubernetes/self-managed-onprem/onpremises
+
+then Download the Calico networking manifest for the Kubernetes API datastore.
+curl https://raw.githubusercontent.com/projectcalico/calico/v3.27.3/manifests/calico.yaml -O
+
+
+Edit this calico.yaml file
+vim calico.yaml
+
+and do the following changes: For convenince I have copied the calico.yaml in this repository
+
+-- Change the value of keys
+          env:
+            - name: IP_AUTODETECTION_METHOD
+              value: "interface=ens192*"  #set this value as per your interface
+              
+              
+            - name: CALICO_IPV4POOL_IPIP
+              value: "Never"
+            # Enable or Disable VXLAN on the default IP pool.
+            - name: CALICO_IPV4POOL_VXLAN
+              value: "Always"
+            # Enable or Disable VXLAN on the default IPv6 IP pool.
+            - name: CALICO_IPV6POOL_VXLAN
+              value: "Never"
+
+Also we need to add one line "default: true  # Set the default value to true" in below kind
+
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: ipamconfigs.crd.projectcalico.org
+spec:
+  group: crd.projectcalico.org
+  names:
+    kind: IPAMConfig
+    listKind: IPAMConfigList
+    plural: ipamconfigs
+    singular: ipamconfig
+  preserveUnknownFields: false
+  scope: Cluster
+  versions:
+  - name: v1
+    schema:
+      openAPIV3Schema:
+        properties:
+          apiVersion:
+            description: 'APIVersion defines the versioned schema of this representation
+              of an object. Servers should convert recognized schemas to the latest
+              internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources'
+            type: string
+          kind:
+            description: IPAMConfigSpec contains the specification for an IPAMConfig
+              resource.
+            properties:
+              autoAllocateBlocks:
+                type: boolean
+              maxBlocksPerHost:
+                description: MaxBlocksPerHost, if non-zero, is the max number of blocks
+                  that can be affine to each host.
+                maximum: 2147483647
+                minimum: 0
+                type: integer
+              strictAffinity:
+                type: boolean
+                default: true  # Set the default value to true
+            required:
+            - autoAllocateBlocks
+            - strictAffinity
+            type: object
+        type: object
+    served: true
+    storage: true
+status:
+  acceptedNames:
+    kind: ""
+    plural: ""
+  conditions: []
+  storedVersions: []
+
+Once above changes are done then apply this yaml, I have created a different file in this code repository for this calico.yaml. Please use that and apply it.
+$ kubectl create -f calico.yaml
+
+Once you apply this it will create calico pods in kube-system
+
+$ kubectl get pods -n kube-system
+
+Once all come up as READY then you can start witht the creation of private docker registry &  deployments of pods

@@ -1,0 +1,5 @@
+FROM docker-registry:5000/openjdk
+ARG JAR_FILE=target/*.jar
+COPY ${JAR_FILE} auth-app.jar
+ENTRYPOINT ["java","-jar","/auth-app.jar"]
+EXPOSE 8079

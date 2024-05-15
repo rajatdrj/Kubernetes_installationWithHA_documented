@@ -1,0 +1,115 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: psa-beat-cm
+  namespace: cctns-new
+data:
+  beat_server_address: psa-beat-svc.cctns-new.svc.cluster.local  
+
+---
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app: beat-app
+  name: psa-beat-server-app
+  namespace: cctns-new
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: beat-app
+  template:
+    metadata:
+      labels:
+        app: beat-app
+    spec:
+      containers:
+      - env:
+        - name: CONFIG_SERVER_ADDRESS
+          valueFrom:
+            configMapKeyRef:
+              key: config_server_address
+              name: psa-config-cm
+        - name: beat_SERVER_ADDRESS
+          valueFrom:
+            configMapKeyRef:
+              key: beat_server_address
+              name: psa-beat-cm
+        - name: EUREKA_SERVER_ADDRESS
+          valueFrom:
+            configMapKeyRef:
+              key: eureka_server_address
+              name: psa-eureka-cm
+        - name: APPLICATION_SERVER
+          valueFrom:
+            fieldRef:
+              apiVersion: v1
+              fieldPath: status.podIP
+        - name: ACTIVE_PROFILE
+          valueFrom:
+            configMapKeyRef:
+              key: ACTIVE_PROFILE
+              name: active-profile
+        - name: TZ
+          value: Asia/Kolkata
+        image: docker-registry:5000/psa-beat-server:v1
+        imagePullPolicy: Always
+        name: beat-app
+        ports:
+        - containerPort: 8880
+          protocol: TCP
+        resources:
+          limits:
+            cpu: 500m
+            memory: 500Mi
+          requests:
+            cpu: 100m
+            memory: 128Mi
+        volumeMounts:
+        - mountPath: /DATA_APP_C_DIARY
+          name: data-app-c-diary
+        - mountPath: /DATA2
+          name: data2
+        - mountPath: /DATA
+          name: data
+        - mountPath: /root/logs
+          name: logs-volume
+      serviceAccount: cctns
+      serviceAccountName: cctns
+      volumes:
+      - hostPath:
+          path: /DATA_APP_C_DIARY
+          type: ""
+        name: data-app-c-diary
+      - hostPath:
+          path: /DATA2
+          type: ""
+        name: data2
+      - hostPath:
+          path: /DATA
+          type: ""
+        name: data
+      - hostPath:
+          path: /Data_NAS_NEW/microservice-log/beat
+          type: ""
+        name: logs-volume
+        
+---
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: psa-beat-svc
+  namespace: cctns-new
+spec:
+  ports:
+  - name: http
+    nodePort: 31005
+    port: 8880
+    protocol: TCP
+    targetPort: 8880
+  selector:
+    app: beat-app
+  type: NodePort

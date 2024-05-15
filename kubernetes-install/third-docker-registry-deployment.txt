@@ -1,0 +1,314 @@
+Follow below steps to deploy private docker repository
+
+Deploy Your Private Docker Registry as a Pod in Kubernetes
+
+Reference: https://medium.com/swlh/deploy-your-private-docker-registry-as-a-pod-in-kubernetes-f6a489bf0180
+
+Step 1: Creating files for authentication
+root@master1:~# mkdir -p /registry && cd "$_"
+root@master1:/registry# mkdir certs
+root@master1:/registry# openssl req -x509 -newkey rsa:4096 -days 365 -nodes -sha256 -keyout certs/tls.key -out certs/tls.crt -subj "/CN=docker-registry" -addext "subjectAltName = DNS:docker-registry"
+
+
+output - 
+Generating a RSA private key
+...........................................................................................................................................++++
+.............................................................++++
+writing new private key to 'certs/tls.key'
+-----
+
+
+Let’s use htpasswd to add user authentication for registry access. My credentials for the private registry would be myuser/mypasswd.
+Replace username and password with your credentials
+root@master1:/registry# mkdir auth
+root@master1:/registry# docker run --rm --entrypoint htpasswd registry:2.6.2 -Bbn myuser mypasswd > auth/htpasswd
+
+At this point, our /registry directory looks like this:
+
+root@master1:/# ls -R /registry/
+/registry/:
+auth  certs
+/registry/auth:
+htpasswd
+/registry/certs:
+tls.crt  tls.key
+root@master1:/#
+
+
+
+Step 2: Using Secrets to mount the certificates
+The below command creates a Secret of type tls named certs-secret in the default namespace from the pair of public/private keys we just created.
+
+root@master1:/# kubectl create secret tls certs-secret --cert=/registry/certs/tls.crt --key=/registry/certs/tls.key
+secret/certs-secret created
+root@master1:/#
+
+
+The Secret auth-secret that we create from the htpasswd file is of type generic which means the Secret was created from a local file.
+
+root@master1:/# kubectl create secret generic auth-secret --from-file=/registry/auth/htpasswd
+secret/auth-secret created
+root@master1:/#
+
+
+Step 3: Creating Persistent Volume and Claim for repository storage
+
+create a pv file
+vim docker-pv.yaml
+
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: docker-repo-pv
+spec:
+  accessModes:
+  - ReadWriteOnce
+  capacity:
+    storage: 10Gi
+  claimRef:
+    apiVersion: v1
+    kind: PersistentVolumeClaim
+    name: docker-repo-pvc
+    namespace: default
+  hostPath:
+    path: /home/cctns_microservices_k8s/private-docker-registry/repository
+    type: ""
+  persistentVolumeReclaimPolicy: Retain
+  volumeMode: Filesystem
+
+---
+
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: docker-repo-pvc
+  namespace: default
+spec:
+  accessModes:
+  - ReadWriteOnce
+  resources:
+    requests:
+      storage: 10Gi
+  volumeMode: Filesystem
+  volumeName: docker-repo-pv
+
+apply this file
+kubectl apply -f docker-pv.yaml
+
+
+
+Now create a docker registry pod yaml
+vi docker-pod.yaml
+
+apiVersion: apps/v1
+kind: ReplicaSet
+metadata:
+  labels:
+    app: registry
+  name: docker-registry-pod
+  namespace: default
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: registry
+  template:
+    metadata:
+      creationTimestamp: null
+      labels:
+        app: registry
+    spec:
+      containers:
+      - env:
+        - name: REGISTRY_AUTH
+          value: htpasswd
+        - name: REGISTRY_AUTH_HTPASSWD_REALM
+          value: Registry Realm
+        - name: REGISTRY_AUTH_HTPASSWD_PATH
+          value: /auth/htpasswd
+        - name: REGISTRY_HTTP_TLS_CERTIFICATE
+          value: /certs/tls.crt
+        - name: REGISTRY_HTTP_TLS_KEY
+          value: /certs/tls.key
+        image: registry:2.7.0
+        imagePullPolicy: IfNotPresent
+        name: registry
+        resources:
+          limits:
+            cpu: 200m
+            memory: 256Mi
+          requests:
+            cpu: 100m
+            memory: 128Mi
+        terminationMessagePath: /dev/termination-log
+        terminationMessagePolicy: File
+        volumeMounts:
+        - mountPath: /var/lib/registry
+          name: repo-vol
+        - mountPath: /certs
+          name: certs-vol
+          readOnly: true
+        - mountPath: /auth
+          name: auth-vol
+          readOnly: true
+      dnsPolicy: ClusterFirst
+      restartPolicy: Always
+      schedulerName: default-scheduler
+      securityContext: {}
+      terminationGracePeriodSeconds: 30
+      volumes:
+      - name: repo-vol
+        persistentVolumeClaim:
+          claimName: docker-repo-pvc
+      - name: certs-vol
+        secret:
+          defaultMode: 420
+          secretName: certs-secret
+      - name: auth-vol
+        secret:
+          defaultMode: 420
+          secretName: auth-secret
+
+apply it
+
+kubectl apply -f docker-pod.yaml
+
+
+
+Now create docker service
+
+vim docker-svc.yaml
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: docker-registry
+  namespace: default
+spec:
+  ports:
+  - nodePort: 31685
+    port: 5000
+    protocol: TCP
+    targetPort: 5000
+  selector:
+    app: registry
+  sessionAffinity: None
+  type: NodePort
+
+
+kubectl apply -f docker-svc.yaml
+
+
+
+
+
+Step 4:  Allowing access to the registry from all the nodes in the cluster
+We observe from the above step that our registry can be accessed at 10.107.59.73:5000, since the ip-address of our Service turned out to be 10.107.59.73. Note that this value will be different in your case.
+root@master1:/# export REGISTRY_NAME="docker-registry"
+root@master1:/# export REGISTRY_IP="10.107.59.73"
+root@master1:/#
+
+
+Now, we shall append the entry “10.107.59.73 docker-registry” to the /etc/hosts file of all the nodes in our cluster so that this ip-address is resolved to the name docker-registry.
+
+The above step can also be done using a single command from the master node (Enter password, if prompted):
+
+root@master1:/# for x in $(kubectl get nodes -o jsonpath='{ $.items[*].status.addresses[?(@.type=="InternalIP")].address }'); do ssh root@$x "echo '$REGISTRY_IP $REGISTRY_NAME' >> /etc/hosts"; done
+root@master1:/#
+
+Next, we must copy the tls.crt that we created earlier as “ca.crt” into a custom /etc/docker/certs.d/docker-registry:5000 directory in all the nodes in our cluster to make sure that our self-signed certificate is trusted by Docker. Note that the directory that is created inside /etc/docker/certs.d should be having the name of the format<registry_name>:<registry_port>.
+
+This step can be done manually or with the help of a single command from the master node as follows:
+
+root@master1:/# for x in $(kubectl get nodes -o jsonpath='{ $.items[*].status.addresses[?(@.type=="InternalIP")].address }'); do ssh root@$x "rm -rf /etc/docker/certs.d/$REGISTRY_NAME:5000;mkdir -p /etc/docker/certs.d/$REGISTRY_NAME:5000"; done
+root@master1:/# 
+root@master1:/# for x in $(kubectl get nodes -o jsonpath='{ $.items[*].status.addresses[?(@.type=="InternalIP")].address }'); do scp /registry/certs/tls.crt root@$x:/etc/docker/certs.d/$REGISTRY_NAME:5000/ca.crt; done
+tls.crt                                                                                                                                                                     100% 1822     2.7MB/s   00:00
+tls.crt                                                                                                                                                                     100% 1822     2.4MB/s   00:00
+tls.crt                                                                                                                                                                     100% 1822     1.6MB/s   00:00
+tls.crt                                                                                                                                                                     100% 1822     2.1MB/s   00:00
+root@master1:/#
+
+
+
+Step 6: Testing our Private Docker Registry
+Now, let us try to login to the registry from the master node, using the same credentials we created earlier:
+
+root@master1:/# docker login docker-registry:5000 -u myuser -p mypasswd
+WARNING! Using --password via the CLI is insecure. Use --password-stdin.
+WARNING! Your password will be stored unencrypted in /root/.docker/config.json.
+Configure a credential helper to remove this warning. See
+https://docs.docker.com/engine/reference/commandline/login/#credentials-store
+Login Succeeded
+root@master1:/#
+
+
+
+Create a namespace
+
+kubectl create ns cctns-new
+
+
+Now create a secret of docker registry for kubernetes to access
+
+kubectl create secret docker-registry registry-credential --docker-server=docker-registry:5000 --docker-username=myuser --docker-password=mypwd -n cctns-new
+
+Replace username and password with your credentials
+
+
+Let us try to push a custom image to our private Docker registry.
+
+root@master1:/# docker pull nginx
+
+root@master1:/# docker tag nginx:latest docker-registry:5000/mynginx:v1
+
+root@master1:/# docker push docker-registry:5000/mynginx:v1
+
+
+if this works means you are able to configure the private repository successfully
+
+
+Now create a service account for our cctns
+
+Create sa
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: cctns
+  namespace: cctns-new
+imagePullSecrets:
+- name: registry-credential
+
+
+we will use this in all of our services to access private docker repository 
+
+
+
+Also create git credentails
+
+vim git-cred-secret.yaml
+
+apiVersion: v1
+kind: Secret
+metadata:
+  name: git-cred
+  namespace: cctns-new
+type: Opaque
+data:
+  username: bWFuaXNodg==
+  password: bWFuaXNoQDEyMw==
+
+kubectl apply -f git-cred-secret.yaml -n  cctns-new
+
+
+create below config map
+
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: active-profile
+  namespace: cctns-new
+data:
+  ACTIVE_PROFILE: cloud-prod
+

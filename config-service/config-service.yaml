@@ -1,0 +1,98 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: psa-config-cm
+  namespace: cctns-new
+data:
+  config_server_address: psa-config-svc.cctns-new.svc.cluster.local
+
+---
+
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: psa-config-server-app
+  namespace: cctns-new
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: psa-config-server-app
+  serviceName: psa-config-svc
+  template:
+    metadata:
+      labels:
+        app: psa-config-server-app
+        dedicated: master
+    spec:
+      containers:
+      - env:
+        - name: CONFIG_SERVER_ADDRESS
+          valueFrom:
+            configMapKeyRef:
+              key: config_server_address
+              name: psa-config-cm
+        - name: APPLICATION_SERVER
+          valueFrom:
+            fieldRef:
+              apiVersion: v1
+              fieldPath: status.podIP
+        - name: SPRING_CLOUD_CONFIG_SERVER_GIT_USERNAME
+          valueFrom:
+            secretKeyRef:
+              key: username
+              name: git-cred
+        - name: SPRING_CLOUD_CONFIG_SERVER_GIT_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              key: password
+              name: git-cred
+        - name: ACTIVE_PROFILE
+          valueFrom:
+            configMapKeyRef:
+              key: ACTIVE_PROFILE
+              name: active-profile
+        - name: TZ
+          value: Asia/Kolkata
+        image: docker-registry:5000/psa-config-server:v1
+        imagePullPolicy: Always
+        name: psa-config-server-app
+        ports:
+        - containerPort: 8989
+          protocol: TCP
+        resources:
+          limits:
+            cpu: 500m
+            memory: 500Mi
+          requests:
+            cpu: 100m
+            memory: 128Mi
+        volumeMounts:
+        - mountPath: /root/logs
+          name: logs-volume
+      dnsPolicy: ClusterFirst
+      imagePullSecrets:
+      - name: reg-cred-secret
+      serviceAccount: cctns
+      serviceAccountName: cctns
+      volumes:
+      - hostPath:
+          path: /Data_NAS_NEW/microservice-log/config
+          type: ""
+        name: logs-volume
+        
+---
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: psa-config-svc
+  namespace: cctns-new
+spec:
+  ports:
+  - port: 8989
+    protocol: TCP
+    targetPort: 8989
+  selector:
+    app: psa-config-server-app
+  type: ClusterIP

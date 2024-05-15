@@ -1,0 +1,115 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: psa-law-order-cm
+  namespace: cctns-new
+data:
+  law-order_server_address: psa-law-order-svc.cctns-new.svc.cluster.local
+
+---
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app: law-order-app
+  name: psa-law-order-server-app
+  namespace: cctns-new
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: law-order-app
+  template:
+    metadata:
+      labels:
+        app: law-order-app
+    spec:
+      containers:
+      - env:
+        - name: CONFIG_SERVER_ADDRESS
+          valueFrom:
+            configMapKeyRef:
+              key: config_server_address
+              name: psa-config-cm
+        - name: LAW_ORDER_SERVER_ADDRESS
+          valueFrom:
+            configMapKeyRef:
+              key: law-order_server_address
+              name: psa-law-order-cm
+        - name: EUREKA_SERVER_ADDRESS
+          valueFrom:
+            configMapKeyRef:
+              key: eureka_server_address
+              name: psa-eureka-cm
+        - name: APPLICATION_SERVER
+          valueFrom:
+            fieldRef:
+              apiVersion: v1
+              fieldPath: status.podIP
+        - name: ACTIVE_PROFILE
+          valueFrom:
+            configMapKeyRef:
+              key: ACTIVE_PROFILE
+              name: active-profile
+        - name: TZ
+          value: Asia/Kolkata
+        image: docker-registry:5000/psa-law-order-server:v1
+        imagePullPolicy: Always
+        name: law-order-app
+        ports:
+        - containerPort: 9097
+          protocol: TCP
+        resources:
+          limits:
+            cpu: 500m
+            memory: 500Mi
+          requests:
+            cpu: 100m
+            memory: 128Mi
+        volumeMounts:
+        - mountPath: /DATA_APP_C_DIARY
+          name: data-app-c-diary
+        - mountPath: /DATA2
+          name: data2
+        - mountPath: /DATA
+          name: data
+        - mountPath: /root/logs
+          name: logs-volume
+      serviceAccount: cctns
+      serviceAccountName: cctns
+      volumes:
+      - hostPath:
+          path: /DATA_APP_C_DIARY
+          type: ""
+        name: data-app-c-diary
+      - hostPath:
+          path: /DATA2
+          type: ""
+        name: data2
+      - hostPath:
+          path: /DATA
+          type: ""
+        name: data
+      - hostPath:
+          path: /Data_NAS_NEW/microservice-log/law-order
+          type: ""
+        name: logs-volume
+        
+---
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: psa-law-order-svc
+  namespace: cctns-new
+spec:
+  ports:
+  - name: http
+    nodePort: 31014
+    port: 9097
+    protocol: TCP
+    targetPort: 9097
+  selector:
+    app: law-order-app
+  type: NodePort

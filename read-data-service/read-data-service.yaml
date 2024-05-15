@@ -1,0 +1,111 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: psa-read-data-cm
+  namespace: cctns-new
+data:
+  read-data_server_address: psa-read-data-svc.cctns-new.svc.cluster.local
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app: read-data-app
+  name: psa-read-data-server-app
+  namespace: cctns-new
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: read-data-app
+  template:
+    metadata:
+      labels:
+        app: read-data-app
+    spec:
+      containers:
+      - env:
+        - name: CONFIG_SERVER_ADDRESS
+          valueFrom:
+            configMapKeyRef:
+              key: config_server_address
+              name: psa-config-cm
+        - name: READ_DATA_SERVER_ADDRESS
+          valueFrom:
+            configMapKeyRef:
+              key: read-data_server_address
+              name: psa-read-data-cm
+        - name: EUREKA_SERVER_ADDRESS
+          valueFrom:
+            configMapKeyRef:
+              key: eureka_server_address
+              name: psa-eureka-cm
+        - name: APPLICATION_SERVER
+          valueFrom:
+            fieldRef:
+              apiVersion: v1
+              fieldPath: status.podIP
+        - name: ACTIVE_PROFILE
+          valueFrom:
+            configMapKeyRef:
+              key: ACTIVE_PROFILE
+              name: active-profile
+        - name: TZ
+          value: Asia/Kolkata
+        image: docker-registry:5000/psa-read-data-server:v1-12
+        imagePullPolicy: Always
+        name: read-data-app
+        ports:
+        - containerPort: 9092
+          protocol: TCP
+        resources:
+          limits:
+            cpu: 500m
+            memory: 500Mi
+          requests:
+            cpu: 100m
+            memory: 128Mi
+        volumeMounts:
+        - mountPath: /DATA_APP_C_DIARY
+          name: data-app-c-diary
+        - mountPath: /DATA2
+          name: data2
+        - mountPath: /DATA
+          name: data
+        - mountPath: /root/logs
+          name: logs-volume
+      serviceAccount: cctns
+      serviceAccountName: cctns
+      volumes:
+      - hostPath:
+          path: /DATA_APP_C_DIARY
+          type: ""
+        name: data-app-c-diary
+      - hostPath:
+          path: /DATA2
+          type: ""
+        name: data2
+      - hostPath:
+          path: /DATA
+          type: ""
+        name: data
+      - hostPath:
+          path: /Data_NAS_NEW/microservice-log/read-data
+          type: ""
+        name: logs-volume
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: psa-read-data-svc
+  namespace: cctns-new
+spec:
+  ports:
+  - name: http
+    nodePort: 31009
+    port: 9092
+    protocol: TCP
+    targetPort: 9092
+  selector:
+    app: read-data-app
+  type: NodePort

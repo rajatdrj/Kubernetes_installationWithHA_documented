@@ -1,0 +1,84 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: psa-eureka-cm
+  namespace: cctns-new
+data:
+  config_server_address: psa-config-svc.cctns-new.svc.cluster.local
+  eureka_server_address: http://psa-eureka-svc.cctns-new.svc.cluster.local:8761/eureka
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  labels:
+    app: eureka
+  name: psa-eureka-server-app
+  namespace: cctns-new
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: eureka
+  serviceName: psa-eureka-svc
+  template:
+    metadata:
+      labels:
+        app: eureka
+    spec:
+      containers:
+      - env:
+        - name: EUREKA_SERVER_ADDRESS
+          valueFrom:
+            configMapKeyRef:
+              key: eureka_server_address
+              name: psa-eureka-cm
+        - name: CONFIG_SERVER_ADDRESS
+          valueFrom:
+            configMapKeyRef:
+              key: config_server_address
+              name: psa-config-cm
+        - name: APPLICATION_SERVER
+          valueFrom:
+            fieldRef:
+              apiVersion: v1
+              fieldPath: status.podIP
+        - name: ACTIVE_PROFILE
+          valueFrom:
+            configMapKeyRef:
+              key: ACTIVE_PROFILE
+              name: active-profile
+        - name: TZ
+          value: Asia/Kolkata
+        image: docker-registry:5000/psa-eureka-server:v1
+        imagePullPolicy: Always
+        name: eureka-server
+        ports:
+        - containerPort: 8761
+          protocol: TCP
+        resources:
+          limits:
+            cpu: 500m
+            memory: 500Mi
+          requests:
+            cpu: 100m
+            memory: 128Mi
+      serviceAccount: cctns
+      serviceAccountName: cctns
+---
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    app: eureka
+  name: psa-eureka-svc
+  namespace: cctns-new
+spec:
+  ports:
+  - nodePort: 32057
+    port: 8761
+    protocol: TCP
+    targetPort: 8761
+  selector:
+    app: eureka
+  type: NodePort
+
